@@ -1,152 +1,211 @@
-import tempfile 
+import tempfile
 import streamlit as st
-
-from langchain_openai.chat_models import ChatOpenAI
-from langchain_groq.chat_models import ChatGroq
-from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.prompts import ChatPromptTemplate
-
-from app import *
+from app import answer, build_rag_chain, build_vector_store, load_and_split_pdf, load_settings
 
 
-TIPOS_ARQUIVOS_VALIDOS = ["Pdf"]
+MAX_HISTORY_DISPLAY = 50  
 
-CONFIG_MODELOS = {
-    "OpenAI": {
-        "modelos": ["gpt-5.3-codex", "gpt-4o-mini"],
-        "chat": ChatOpenAI,
-    },
-}
+def _init_session():
+    defaults = {
+        "messages": [],
+        "chain": None,
+        "retriever": None,
+        "doc_name": None,
+        "doc_chunks": 0,
+        "settings": None,
+    }
+    for key, val in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = val
+
+_init_session()
+
+def sidebar():
+    st.header("⚙️ Configuração")
+
+    if st.session_state.chain is not None:
+        st.success(
+            f"📄 **{st.session_state.doc_name}**\n\n"
+            f"{st.session_state.doc_chunks} chunks · "
+            f"{len(st.session_state.messages) // 2} turnos de conversa",
+        )
+    else:
+        st.info("Nenhum documento carregado.", icon="📂")
+
+    st.divider()
+
+    arquivo = st.file_uploader(
+        "Upload de PDF",
+        type=["pdf"],
+        help="Selecione um arquivo PDF para análise.",
+    )
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        init_clicked = st.button(
+            "🚀 Inicializar",
+            use_container_width=True,
+            type="primary",
+            disabled=(arquivo is None),
+        )
+
+    with col2:
+        clear_clicked = st.button(
+            "🗑️ Limpar chat",
+            use_container_width=True,
+            disabled=(len(st.session_state.messages) == 0),
+        )
+
+    if init_clicked:
+        _initialize_assistant(arquivo)
+
+    if clear_clicked:
+        st.session_state.messages = []
+        st.rerun()
+
+    st.divider()
+    settings = st.session_state.get("settings")
+    if settings:
+        st.caption(
+            f"🤖 `{settings.model_name}` · embeddings: `{settings.embedding_model}`\n\n"
+            f"🔒 Configurado via variáveis de ambiente."
+        )
+    else:
+        st.caption("🔒 Modelo configurado via variáveis de ambiente.")
 
 
-if "messages" not in st.session_state:
+def _initialize_assistant(arquivo):
+    """Load the PDF, build vector store and RAG chain, store in session state."""
+    with st.spinner("Carregando configurações..."):
+        try:
+            settings = load_settings()
+        except ValueError as exc:
+            st.error(f"**Erro de configuração:** {exc}", icon="🔑")
+            st.stop()
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp:
+        tmp.write(arquivo.read())
+        tmp_path = tmp.name
+
+    progress = st.progress(0, text="Lendo documento...")
+    try:
+        chunks = load_and_split_pdf(tmp_path, settings)
+        progress.progress(40, text=f"{len(chunks)} chunks criados. Gerando embeddings...")
+
+        vector_store = build_vector_store(chunks, settings)
+        progress.progress(80, text="Construindo chain RAG...")
+
+        chain, retriever = build_rag_chain(vector_store, settings)
+        progress.progress(100, text="Pronto!")
+    except Exception as exc:
+        progress.empty()
+        st.error(f"**Erro ao processar documento:** {exc}", icon="❌")
+        return
+
+    progress.empty()
+    st.session_state.chain = chain
+    st.session_state.retriever = retriever
+    st.session_state.settings = settings
     st.session_state.messages = []
+    st.session_state.doc_name = arquivo.name
+    st.session_state.doc_chunks = len(chunks)
+    st.rerun()
 
-if "chain" not in st.session_state:
-    st.session_state.chain = None
-
-def load_arquivo(tipo_arquivo, arquivo):
-    if tipo_arquivo == 'Pdf':
-        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp:
-            temp.write(arquivo.read())
-            name_temp = temp.name
-        documento = load_pdf(name_temp)
-    return documento
-
-def load_model(provedor, modelo, api_key, tipo_arquivo, arquivo):
-    documento = load_arquivo(tipo_arquivo, arquivo)
-
-    system_message = '''Você é um assistente amigável. Você possui acesso às seguintes informações vindas de um documento {}:
-
-    #####
-    {}
-    #####
-
-    Utilize as informações fornecidas para basear as suas respostas.
-
-    Sempre que houver $ na sua saída, substitua por S.
-
-    '''.format(tipo_arquivo, documento)
-
-    template = ChatPromptTemplate.from_messages([
-        ("system", system_message),
-        ("placeholder", "{chat_history}"),
-       ("user", "{input}"),
-    ])
-
-    
-    chat = CONFIG_MODELOS[provedor]["chat"](model=modelo, api_key=api_key)
-    chain = template | chat
-    st.session_state["chain"] = chain
-
-
-def extrair_texto_resposta(resposta):
-    content = getattr(resposta, "content", resposta)
-
-    if isinstance(content, list):
-        textos = []
-        for item in content:
-            if isinstance(item, dict):
-                if item.get("type") == "text":
-                    textos.append(str(item.get("text", "")))
-                elif "text" in item:
-                    textos.append(str(item["text"]))
-        return "".join(textos)
-
-    if isinstance(content, dict):
-        if "text" in content:
-            return str(content["text"])
-        return ""
-
-    return str(content)
-
+def _render_sources(sources: list[dict]) -> None:
+    """Render a collapsible expander listing the document pages used."""
+    if not sources:
+        return
+    pages = ", ".join(f"p. {s['page']}" for s in sources)
+    with st.expander(f"📄 Fonte: documento interno · {pages}", expanded=False):
+        for s in sources:
+            st.markdown(f"**Página {s['page']}**")
+            st.caption(f"_{s['snippet']}…_")
+            st.divider()
 
 def page_chat():
-    st.header("Bem-vindo ao Assistente", divider=True)
+    st.title("🔮 Oráculo")
+    st.caption("Assistente inteligente para análise de documentos")
 
     chain = st.session_state.get("chain")
+    retriever = st.session_state.get("retriever")
+    settings = st.session_state.get("settings")
 
-    if chain is None:
-        st.error('Carregue um arquivo e inicialize o assistente antes de enviar mensagens.')
-        st.stop()
+    if chain is None or retriever is None:
+        st.markdown("---")
+        col_a, col_b, col_c = st.columns([1, 2, 1])
+        with col_b:
+            st.markdown(
+                """
+                <div style="text-align:center; padding: 3rem 0;">
+                    <div style="font-size:4rem;">📂</div>
+                    <h3>Nenhum documento carregado</h3>
+                    <p style="color:gray;">
+                        Faça o upload de um PDF na barra lateral<br>
+                        e clique em <strong>Inicializar</strong> para começar.
+                    </p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        return
+
+    n_pairs = len(st.session_state.messages) // 2
+    max_pairs = settings.max_history_pairs if settings else 10
+    if n_pairs >= max_pairs:
+        st.warning(
+            f"As mensagens mais antigas estão sendo descartadas do contexto "
+            f"(limite: {max_pairs} turnos). Use **Limpar chat** para reiniciar.",
+            icon="⚠️",
+        )
 
     for mensagem in st.session_state.messages:
         with st.chat_message(mensagem["role"]):
             st.markdown(mensagem["content"])
-
-    input_user = st.chat_input("Fale com o assistente")
+    input_user = st.chat_input(
+        f"Pergunte sobre '{st.session_state.doc_name}'..."
+        if st.session_state.doc_name
+        else "Faça uma pergunta sobre o documento..."
+    )
 
     if input_user:
-        st.session_state.messages.append({'role': 'user', 'content': input_user})
+        st.session_state.messages.append({"role": "user", "content": input_user})
         with st.chat_message("user"):
             st.markdown(input_user)
 
-        chat_history = []
-        for mensagem in st.session_state.messages[:-1]:
-            if mensagem["role"] == "user":
-                chat_history.append(HumanMessage(content=mensagem["content"]))
-            elif mensagem["role"] == "assistant":
-                chat_history.append(AIMessage(content=mensagem["content"]))
+        history = st.session_state.messages[:-1]
 
-        with st.spinner("Pensando..."):
-            resposta = chain.invoke({
-                "chat_history": chat_history,
-                "input": input_user,
-            })
-
-        texto_resposta = extrair_texto_resposta(resposta)
-        st.session_state.messages.append({'role': 'assistant', 'content': texto_resposta})
         with st.chat_message("assistant"):
-            st.markdown(texto_resposta)
+            with st.spinner("Consultando documento..."):
+                try:
+                    resposta, sources = answer(
+                        chain,
+                        retriever,
+                        input_user,
+                        history,
+                        max_history_pairs=max_pairs,
+                    )
+                except Exception as exc:
+                    resposta = f"⚠️ Erro ao gerar resposta: {exc}"
+                    sources = []
+            st.markdown(resposta)
+            _render_sources(sources)
 
-
-def sidebar():
-    tabs = st.tabs(["Upload de Arquivos", "Seleção de Modelos"])
-
-    with tabs[0]:
-        tipo_arquivo = st.selectbox("Selecione o tipo de arquivo", TIPOS_ARQUIVOS_VALIDOS)
-        if tipo_arquivo == "Pdf":
-            arquivo = st.file_uploader("Faça o upload do arquivo Pdf", type=["pdf"])
-
-    with tabs[1]:
-        provedor = st.selectbox("Selecione o provedor dos modelos", CONFIG_MODELOS.keys())
-        modelo = st.selectbox("Selecione o modelo", CONFIG_MODELOS[provedor]["modelos"])
-        api_key = st.text_input(
-            f"Adicione a api key para o provedor {provedor}",
-            value=st.session_state.get(f"api_key_{provedor}"),
-        )
-        st.session_state[f"api_key_{provedor}"] = api_key
-
-    if st.button("Inicializar Assistente", use_container_width=True):
-        load_model(provedor, modelo, api_key, tipo_arquivo, arquivo)
-    if st.button("Apagar histórico de mensagens", use_container_width=True):
-        st.session_state.messages = []
+        st.session_state.messages.append({"role": "assistant", "content": resposta})
 
 
 def main():
+    st.set_page_config(
+        page_title="Oráculo — Assistente de Documentos",
+        page_icon="🔮",
+        layout="wide",
+    )
+
     with st.sidebar:
         sidebar()
+
     page_chat()
+
 
 if __name__ == "__main__":
     main()
