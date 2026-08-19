@@ -23,7 +23,7 @@ class Settings:
 
 
 try:
-    _ = st.secrets  # noqa: F841  — just probing availability
+    _ = st.secrets  
     _ST_AVAILABLE = True
 except FileNotFoundError:
     _ST_AVAILABLE = False
@@ -54,12 +54,12 @@ def load_settings() -> Settings:
         )
     return Settings(
         openai_api_key=api_key,
-        model_name=_get_secret("MODEL_NAME", "gpt-4o-mini"),
+        model_name=_get_secret("MODEL_NAME", "gpt-5-mini-2025-08-07"),
         embedding_model=_get_secret("EMBEDDING_MODEL", "text-embedding-3-small"),
-        chunk_size=int(_get_secret("CHUNK_SIZE", "1000")),
-        chunk_overlap=int(_get_secret("CHUNK_OVERLAP", "200")),
+        chunk_size=int(_get_secret("CHUNK_SIZE", "800")),
+        chunk_overlap=int(_get_secret("CHUNK_OVERLAP", "120")),
         retriever_k=int(_get_secret("RETRIEVER_K", "4")),
-        max_history_pairs=int(_get_secret("MAX_HISTORY_PAIRS", "10")),
+        max_history_pairs=int(_get_secret("MAX_HISTORY_PAIRS", "5")),
     )
 
 
@@ -125,6 +125,7 @@ def build_rag_chain(vector_store: FAISS, settings: Settings):
         api_key=settings.openai_api_key,
         temperature=0.2,
         streaming=True,
+        max_retries=2
     )
 
     chain = prompt | llm
@@ -157,7 +158,7 @@ def answer(
     retriever,
     question: str,
     history: list[dict],
-    max_history_pairs: int = 10,
+    max_history_pairs: int = 5,
 ) -> tuple[str, list[dict]]:
     """
     Retrieve relevant chunks for `question`, build chat history messages,

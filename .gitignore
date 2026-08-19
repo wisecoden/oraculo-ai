@@ -4,14 +4,16 @@
 
 # Cache do Python
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
+*.so
 
 # Ambientes virtuais
 .venv/
 venv/
 env/
+.env
 
 # Secrets
 .env

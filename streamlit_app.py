@@ -44,7 +44,7 @@ def sidebar():
 
     with col1:
         init_clicked = st.button(
-            "🚀 Inicializar",
+            "◈ Inicializar",
             use_container_width=True,
             type="primary",
             disabled=(arquivo is None),
@@ -124,7 +124,7 @@ def _render_sources(sources: list[dict]) -> None:
             st.divider()
 
 def page_chat():
-    st.title("🔮 Oráculo")
+    st.title("◈ Oráculo.AI")
     st.caption("Assistente inteligente para análise de documentos")
 
     chain = st.session_state.get("chain")
@@ -151,7 +151,7 @@ def page_chat():
         return
 
     n_pairs = len(st.session_state.messages) // 2
-    max_pairs = settings.max_history_pairs if settings else 10
+    max_pairs = settings.max_history_pairs
     if n_pairs >= max_pairs:
         st.warning(
             f"As mensagens mais antigas estão sendo descartadas do contexto "
@@ -196,8 +196,8 @@ def page_chat():
 
 def main():
     st.set_page_config(
-        page_title="Oráculo — Assistente de Documentos",
-        page_icon="🔮",
+        page_title="Oráculo.AI",
+        page_icon="◈",
         layout="wide",
     )
 
